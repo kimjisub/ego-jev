@@ -24,7 +24,9 @@ No other dependencies: no Playwright, no bundled browser.
 ## Install
 
 ```bash
-npm install -g ego-jev
+npm install -g github:kimjisub/ego-jev#v0.2.0
+# or the release tarball
+npm install -g https://github.com/kimjisub/ego-jev/releases/download/v0.2.0/ego-jev-0.2.0.tgz
 # or from source
 git clone https://github.com/kimjisub/ego-jev.git && cd ego-jev && npm link
 ```
