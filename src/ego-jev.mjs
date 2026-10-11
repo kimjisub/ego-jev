@@ -43,6 +43,9 @@ const MAX_STATE_CHARS = 70_000;  // requests are capped at 32,768 input tokens
 const GROUP = 30;
 const VERIFY_DONE = 0.65, VERIFY_LIKELY = 0.35;
 const REQUIRE_MET = 0.5;
+const FILL_AT = 0.5;            // a value is typed in the same round only if Jev picks its field with at least this
+
+const requirementQuestions = require => Object.fromEntries(require.map((text, k) => [`req${k}`, { type: "noul", instructions: `Look only at the current state of \`page\` (selected filters, checked boxes, chosen sort order, entered values, the screen that is shown). Is this requirement visibly in effect on \`page\` right now: "${text}"? If it is not visibly in effect, the answer is no.` }]));
 
 // For questions that send the whole page (check, verify, ...). Pages with many elements exceed the input cap,
 // so elements with state (checked, value, expanded) are kept first and the rest fill up to the cap, in page order.
@@ -63,7 +66,10 @@ export function fitPage(page) {
 // Short, model-readable reason for a failed ego action.
 export function actionError(e) {
   const msg = String(e?.message ?? e).replace(/^\w*Error:\s*/, "");
-  if (/intercepts pointer events/i.test(msg)) return "click blocked: another element (a modal, overlay or banner) covers the target";
+  if (/intercepts pointer events/i.test(msg)) {
+    const by = msg.match(/;\s*(.{1,80}?)\s+intercepts pointer events/i)?.[1];
+    return by ? `click blocked: ${by} covers the target; close or dismiss it first` : "click blocked: another element (a modal, overlay or banner) covers the target";
+  }
   if (/matched 0 elements|not attached|detached/i.test(msg)) return "target is no longer on the page (the page changed)";
   if (/zero-sized|not visible|hidden/i.test(msg)) return "target is not visible";
   if (/disabled|not enabled/i.test(msg)) return "target is disabled";
@@ -113,7 +119,8 @@ export class EgoJev {
 
   async open(url) {
     const t0 = Date.now();
-    await this.ep.goto(url);
+    // waiting for "load" stalls on slow third-party resources; the DOM settle below decides when the page is ready
+    await this.ep.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await this.settle();
     return { url: await this.url(), title: await this.title(), ms: Date.now() - t0 };
   }
@@ -180,7 +187,10 @@ export class EgoJev {
     });
   }
 
-  async decide(page, goal, values, history, lastChange, extra = {}) {
+  // `require`, when given, adds the requirement scores to the same request on pages that fit in one stage; the
+  // answer then carries `require` (scores in order). Two-stage pages leave it out, because their first request
+  // sees element groups only, not element states.
+  async decide(page, goal, values, history, lastChange, extra = {}, require = null) {
     const task = { goal, ...extra, ...(Object.keys(values).length ? { values } : {}), history, ...(lastChange ? { last_change: lastChange } : {}) };
     const withValues = Object.keys(values).length ? ", with the given `task.values`" : "";
     const common = {
@@ -197,8 +207,9 @@ export class EgoJev {
 
     if (page.elements.length <= MAX_SINGLE && fits(page)) {
       targetQ.criteria = Object.fromEntries(page.elements.map(e => [String(e.i), null]));
-      const r = await this.call({ page, task }, { ...common, ...(page.elements.length ? { target: targetQ } : {}) });
-      return { ...r.answers, stages: 1 };
+      const reqQs = require?.length ? requirementQuestions(require) : {};
+      const r = await this.call({ page, task }, { ...common, ...reqQs, ...(page.elements.length ? { target: targetQ } : {}) });
+      return { ...r.answers, stages: 1, ...(require?.length ? { require: require.map((_, k) => r.answers[`req${k}`].noul) } : {}) };
     }
     // Two stages: groups of consecutive elements, then elements in the likeliest groups.
     const groups = [];
@@ -222,16 +233,19 @@ export class EgoJev {
   }
 
   // Resolve independent tool/target/value answers into one consistent action.
-  resolve(page, a, values) {
+  resolve(page, a, values, lastTyped = null) {
     let tool = a.tool.choice;
     const byI = new Map(page.elements.map(e => [String(e.i), e]));
     const ranked = a.target ? Object.entries(a.target.probabilities).sort((x, y) => y[1] - x[1]) : [];
-    const fits = { type: FIELDISH, press_enter: e => FIELDISH(e) || e.tag.startsWith("input"), select: SELECTISH, upload: FILEISH };
+    const fits = { type: FIELDISH, press_enter: e => FIELDISH(e) || /^(input:(submit|button|image)|button)/.test(e?.tag ?? ""), select: SELECTISH, upload: FILEISH };
     let [ti, tp] = ranked[0] ?? [null, 0];
     if (fits[tool] && ti != null && !fits[tool](byI.get(ti))) {
       const alt = ranked.find(([i]) => fits[tool](byI.get(i)));
       if (alt && (alt[1] >= 0.1 || tool === "upload")) [ti, tp] = alt;
       else if (tool === "upload") { const f = page.elements.find(FILEISH); if (f) [ti, tp] = [String(f.i), 0.5]; }
+      else if (tool === "press_enter" && lastTyped && page.elements.some(e => brief(e) === lastTyped && FIELDISH(e))) {
+        const f = page.elements.find(e => brief(e) === lastTyped && FIELDISH(e)); [ti, tp] = [String(f.i), 0.5];
+      }
       else if (tool === "type" || tool === "select") tool = "click";
     }
     if (tool === "type" && !Object.keys(values).length) tool = "click";
@@ -362,20 +376,41 @@ export class EgoJev {
   // separately whether every part of the goal is in effect now, judged from page state rather than the action history.
   async verify(page, goal, history) {
     const { answers } = await this.call({ page: fitPage(page), task: { goal, history: history.slice(-12) } }, {
-      all: { type: "noul", instructions: "Look only at the current state of `page` (selected filters, checked boxes, chosen sort order, entered values, shown results), not at what `task.history` says was clicked. Is every part of `task.goal` visibly in effect on `page` right now? If any requested part is not visibly in effect, the answer is no." },
+      all: { type: "noul", instructions: "Look at the current state of `page`, not at what `task.history` says was clicked. Is every part of `task.goal` in effect? A part counts as in effect if `page` shows it (a selected filter, a checked box, a chosen sort order, an entered value) or shows what it leads to (a confirmation, the page reached after submitting, logging in or navigating). If `task.goal` asks to order, buy, send, submit, book or save something, it is in effect only when `page` shows the result of doing so (a confirmation, the submitted data, the next step), not a filled-in form. If any requested part is neither shown nor evidenced, the answer is no." },
     });
     return answers.all.noul;
   }
 
   // Score each caller-given requirement against the current page state, in one request.
   async requirements(page, goal, require) {
-    const qs = Object.fromEntries(require.map((text, k) => [`r${k}`, { type: "noul", instructions: `Look only at the current state of \`page\` (selected filters, checked boxes, chosen sort order, entered values, the screen that is shown). Is this requirement visibly in effect on \`page\` right now: "${text}"? If it is not visibly in effect, the answer is no.` }]));
-    const { answers } = await this.call({ page: fitPage(page), task: { goal } }, qs);
-    return require.map((_, k) => answers[`r${k}`].noul);
+    const { answers } = await this.call({ page: fitPage(page), task: { goal } }, requirementQuestions(require));
+    return require.map((_, k) => answers[`req${k}`].noul);
   }
 
-  async runGoal(goal, { values = {}, require = [], maxActions = 10, doneAt = 0.5, minTarget = 0.3, allowIrreversible = false, irreversibleAt = 0.6, log = () => {} } = {}) {
-    const t0 = Date.now(); const calls0 = this.stats.calls;
+  // The next action types one value. If more values are still to be entered and the page has more empty fields, ask
+  // in one request which field each of them belongs to, so a form takes one round instead of one per field.
+  async fillPlan(page, goal, values, act, history) {
+    const typed = new Set(history.filter(h => h.action === "type" && !h.error).map(h => h.value));
+    const onPage = new Set(page.elements.map(e => e.value).filter(Boolean));
+    const keys = Object.keys(values).filter(k => k !== act.valueKey && !typed.has(k) && !onPage.has(String(values[k])));
+    const fields = page.elements.filter(e => FIELDISH(e) && !e.value && e.i !== act.target);
+    if (!keys.length || !fields.length) return [];
+    const criteria = { none: null, ...Object.fromEntries(fields.map(e => [String(e.i), null])) };
+    const qs = Object.fromEntries(keys.map((k, n) => [`v${n}`, { type: "choice", instructions: `Which entry of \`page.elements\` (by its \`i\`) is the field meant for \`task.values["${k}"]\`, toward \`task.goal\`? Answer none if no field on \`page\` is meant for it.`, criteria }]));
+    const { answers } = await this.call({ page: { url: page.url, title: page.title, text: page.text.slice(0, 1500), elements: fields }, task: { goal, values } }, qs);
+    const picks = keys.map((k, n) => ({ k, i: answers[`v${n}`].choice, p: answers[`v${n}`].probabilities[answers[`v${n}`].choice] }))
+      .filter(x => x.i !== "none" && x.p >= FILL_AT).sort((x, y) => y.p - x.p);
+    const used = new Set(), plan = [];
+    for (const x of picks) {
+      if (used.has(x.i)) continue;
+      used.add(x.i);
+      plan.push({ tool: "type", target: +x.i, el: fields.find(e => String(e.i) === x.i), valueKey: x.k, value: values[x.k], p: +x.p.toFixed(2) });
+    }
+    return plan;
+  }
+
+  async runGoal(goal, { values = {}, require = [], batchFill = true, mergeRequire = true, maxActions = 10, doneAt = 0.5, minTarget = 0.3, allowIrreversible = false, irreversibleAt = 0.6, log = () => {} } = {}) {
+    const t0 = Date.now(); const calls0 = this.stats.calls, tokens0 = this.stats.tokens;
     const history = []; const rounds = [];
     let prevPage = null, waits = 0, page = null, status = "max_actions", info, pending, retried = false, rejected = 0;
     const seen = new Map(), reached = new Set();
@@ -398,13 +433,24 @@ export class EgoJev {
       // With requirements, the round works on the first one never reached yet. A reached one stays reached, because
       // later steps can undo earlier states (a cart empties once the order is placed). The run ends when all have
       // been reached and the last is in effect now; done if every one is still in effect, likely_done otherwise.
-      let focus = goal, extra = {}, req;
+      // With mergeRequire, the scores come with the action in one request: the round guesses that the focus is the
+      // same as last round's, and asks again with the new focus only if the scores show that guess was already reached.
+      let focus = goal, extra = {}, req, a;
+      const hist = history.slice(-12), diff = round ? pageDiff(prevPage, page) : undefined;
       if (require.length) {
-        req = (await this.requirements(page, goal, require)).map(p => +p.toFixed(2));
-        req.forEach((p, k) => { if (p >= REQUIRE_MET) reached.add(k); });
+        const firstOpen = () => require.findIndex((_, k) => !reached.has(k));
+        const extraFor = () => ({ overall_goal: goal, already_reached: require.filter((_, k) => reached.has(k)) });
+        const score = sc => { req = sc.map(p => +p.toFixed(2)); req.forEach((p, k) => { if (p >= REQUIRE_MET) reached.add(k); }); };
+        const guess = firstOpen();
+        // only pages asked in one stage can carry the scores; on two-stage pages the guess would cost a request
+        if (mergeRequire && guess >= 0 && page.elements.length <= MAX_SINGLE && fits(page)) {
+          a = await this.decide(page, require[guess], values, hist, diff, extraFor(), require);
+          if (!a.require) score(await this.requirements(page, goal, require)); else score(a.require);
+          if (firstOpen() !== guess) a = null;
+        } else score(await this.requirements(page, goal, require));
         log(`  r${round}: require=[${req.join(", ")}]`);
         const last = require.length - 1;
-        let next = require.findIndex((_, k) => !reached.has(k));
+        let next = firstOpen();
         if (next < 0 && req[last] >= REQUIRE_MET) {
           rounds.push({ round, require: req });
           const gone = require.filter((_, k) => req[k] < REQUIRE_MET);
@@ -414,11 +460,16 @@ export class EgoJev {
         }
         if (next < 0) next = last;
         focus = require[next];
-        extra = { overall_goal: goal, already_reached: require.filter((_, k) => reached.has(k)) };
-      }
-      const a = await this.decide(page, focus, values, history.slice(-12), round ? pageDiff(prevPage, page) : undefined, extra);
+        extra = extraFor();
+        if (!a) a = await this.decide(page, focus, values, hist, diff, extra);
+      } else a = await this.decide(page, goal, values, hist, diff);
       prevPage = page;
-      const act = this.resolve(page, a, values);
+      if (req && a.tool.choice === "none" && a.tool.probabilities.none < 0.6 && a.target) {
+        const pt = Math.max(...Object.values(a.target.probabilities));
+        const alt = Object.entries(a.tool.probabilities).filter(([t]) => TARGETED.has(t)).sort((x, y) => y[1] - x[1])[0];
+        if (pt >= 0.6 && alt) a.tool = { ...a.tool, choice: alt[0], overridden_none: true };
+      }
+      const act = this.resolve(page, a, values, history.findLast(h => h.action === "type" && !h.error)?.element);
       const done = Math.max(a.done.noul, a.done_change?.noul ?? 0);
       const r = {
         round, done: +done.toFixed(2), done_plain: +a.done.noul.toFixed(2), done_change: +(a.done_change?.noul ?? 0).toFixed(2),
@@ -454,7 +505,7 @@ export class EgoJev {
         // content that appears after a delay (modals, late renders): look once more before giving up
         retried = true; await sleep(1500); round--; rounds.pop(); continue;
       }
-      if (!req && act.tool === "none" && round > 0 && done >= 0.35 && a.error.noul < 0.5 && a.blocked.noul < 0.5) {
+      if (!req && act.tool === "none" && round > 0 && a.error.noul < 0.5 && a.blocked.noul < 0.5) {
         if (await finish(r, act)) break;
       }
       if (act.tool === "none") { status = a.blocked.noul >= 0.5 ? "blocked" : "stuck"; if (req) info = `Jev found no action for the requirement "${focus}"`; break; }
@@ -493,6 +544,20 @@ export class EgoJev {
         break;
       }
 
+      if (batchFill && act.tool === "type" && act.valueKey != null) {
+        const plan = await this.fillPlan(page, focus, values, act, history);
+        if (plan.length) {
+          for (const x of [act, ...plan]) {
+            const hx = { action: "type", element: brief(x.el), value: x.valueKey };
+            try { await this.act(x); } catch (e) { hx.error = actionError(e); log(`  ! ${hx.error}`); }
+            history.push(hx);
+          }
+          r.also_typed = plan.map(x => ({ value: x.valueKey, target: x.target, p: x.p }));
+          log(`     also typed ${plan.map(x => `${x.valueKey} -> #${x.target} ${brief(x.el)} (${x.p})`).join(", ")}`);
+          continue;
+        }
+      }
+
       const h = { action: act.tool, element: brief(act.el) };
       if (act.tool === "select" && act.value != null) h.option = act.value;
       if (act.valueKey && ["type", "select", "upload"].includes(act.tool)) h.value = act.valueKey;
@@ -508,7 +573,7 @@ export class EgoJev {
       }
     }
     if (this.events.length) history.push(...this.events.splice(0).map(e => ({ event: e })));
-    const out = { status, goal, url: await this.url().catch(() => page?.url), title: await this.title(), actions: history, rounds, jev_calls: this.stats.calls - calls0, ms: Date.now() - t0 };
+    const out = { status, goal, url: await this.url().catch(() => page?.url), title: await this.title(), actions: history, rounds, jev_calls: this.stats.calls - calls0, jev_tokens: this.stats.tokens - tokens0, ms: Date.now() - t0 };
     if (info) out.info = info;
     if (pending) out.pending = pending;
     out.done_score = +(rounds.at(-1)?.done ?? 0);

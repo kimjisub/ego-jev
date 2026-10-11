@@ -16,6 +16,7 @@ import { tmpdir, homedir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createInterface } from "node:readline";
 
 const ROOT = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
 
@@ -32,6 +33,8 @@ const USAGE = `usage: ego-jev do|check|read "<text>" [key=value ...] [--url U] [
   --require R           a page state do has to reach; repeat for several, in the order they should be reached.
                         Each round works on the first one not reached yet
   --allow-irreversible  let do click through steps that look hard to undo (orders, payments, deletes)
+  --no-batch-fill       type one value per round instead of filling every matching empty field at once
+  --no-merge-require    score requirements in a separate request every round instead of with the action
   --finish              close the TaskSpace afterwards
 
 environment: TYPESAFE_API_KEY (required), EGO_BROWSER (path to ego-browser, optional)`;
@@ -52,6 +55,8 @@ for (let k = 0; k < argv.length; k++) {
   else if (a === "--allow-irreversible") A.allowIrreversible = true;
   else if (a === "--finish") A.finish = true;
   else if (a === "--require") (A.require ??= []).push(argv[++k]);
+  else if (a === "--no-batch-fill") A.batchFill = false;
+  else if (a === "--no-merge-require") A.mergeRequire = false;
   else if (a.startsWith("--")) fail(USAGE);
   else if (A.goal == null) A.goal = a;
   else { const i = a.indexOf("="); if (i < 1) fail(USAGE); A.values[a.slice(0, i)] = a.slice(i + 1); }
@@ -76,11 +81,17 @@ const script = [
 ].join("\n");
 
 const env = { ...process.env }; delete env.TYPESAFE_API_KEY;
-const child = spawn(egoBrowser, ["nodejs"], { stdio: ["pipe", "inherit", "inherit"], env });
+const child = spawn(egoBrowser, ["nodejs"], { stdio: ["pipe", "pipe", "pipe"], env });
 child.stdin.end(script);
+// The ego runtime writes console.log to stderr when its stdout is not a terminal. Route ego-jev's own lines (progress
+// and the result) to stdout and everything else (runtime errors) to stderr, so `ego-jev ... | tail -1` works.
+const OURS = /^(EGO_JEV_RESULT |\s+r\d+:|\s+!|\s+(verify|confirm)=|\s+also typed )/;
+for (const s of [child.stdout, child.stderr]) {
+  createInterface({ input: s }).on("line", l => (OURS.test(l) ? process.stdout : process.stderr).write(l + "\n"));
+}
 // Opening a FIFO for writing waits until the runtime opens it for reading.
 const w = createWriteStream(A.keyFifo);
 w.on("error", () => {});
 w.end(key);
-child.on("exit", code => { cleanup(); process.exit(code ?? 1); });
+child.on("close", code => { cleanup(); process.exitCode = code ?? 1; });
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { child.kill(sig); cleanup(); process.exit(130); });

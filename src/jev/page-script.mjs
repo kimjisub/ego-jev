@@ -112,6 +112,9 @@ export const ENUMERATE = ({ start, frame }) => {
     const srt = el.getAttribute("aria-sort") || String(el.className?.baseVal ?? el.className ?? "").match(/sort\w*?(asc|desc|up|down)/i)?.[1];
     if (srt && srt !== "none") o.sorted = /asc|up/i.test(srt) ? "ascending" : /desc|down/i.test(srt) ? "descending" : srt;
     if (el.hasAttribute("aria-expanded")) o.expanded = el.getAttribute("aria-expanded") === "true";
+    const pop = el.getAttribute("aria-haspopup");
+    if (getComputedStyle(el).cursor === "help") o.opens = "help text";
+    else if (pop && pop !== "false") o.opens = pop === "true" ? "menu" : pop;
     if (el.getAttribute("aria-checked")) o.checked = el.getAttribute("aria-checked") === "true";
     if (el.getAttribute("aria-selected") === "true" || el.getAttribute("aria-current") || el.getAttribute("aria-pressed") === "true" || /\b(selected|active)\b/.test(el.className?.baseVal ?? el.className ?? "")) o.active = true;
 

@@ -1,14 +1,17 @@
 {
   "name": "ego-jev",
-  "version": "0.1.0",
-  "description": "Let Jev (TypeSafe System One) drive multi-step flows inside ego lite, your real browser. The agent supplies goals and values; Jev picks every click.",
+  "version": "0.2.0",
+  "description": "Let Jev (TypeSafe System One) drive multi-step flows inside ego lite, your real browser. The agent supplies goals, values and target page states; Jev picks every click.",
   "keywords": ["ego-lite", "jev", "typesafe", "browser-automation", "agent", "claude-code"],
   "license": "MIT",
   "author": "Kim Jisub",
+  "repository": { "type": "git", "url": "git+https://github.com/kimjisub/ego-jev.git" },
+  "homepage": "https://github.com/kimjisub/ego-jev#readme",
+  "bugs": { "url": "https://github.com/kimjisub/ego-jev/issues" },
   "type": "module",
   "bin": { "ego-jev": "bin/ego-jev.mjs" },
   "exports": { ".": "./src/ego-jev.mjs" },
-  "files": ["bin", "src", "README.md", "LICENSE"],
+  "files": ["bin", "src", "README.md", "CHANGELOG.md", "LICENSE"],
   "engines": { "node": ">=20" },
   "os": ["darwin"]
 }
