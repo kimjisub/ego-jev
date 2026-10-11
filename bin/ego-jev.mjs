@@ -29,8 +29,8 @@ const USAGE = `usage: ego-jev do|check|read "<text>" [key=value ...] [--url U] [
   --space N             reuse TaskSpace N (default: create one named --name or "ego-jev")
   --page p1             page label inside the TaskSpace (default p1)
   --max N               action budget for do (default 10)
-  --require R           a condition that must be visibly in effect for do to finish; repeat for several.
-                        Each round works on the first one not yet in effect, in the order given
+  --require R           a page state do has to reach; repeat for several, in the order they should be reached.
+                        Each round works on the first one not reached yet
   --allow-irreversible  let do click through steps that look hard to undo (orders, payments, deletes)
   --finish              close the TaskSpace afterwards
 
