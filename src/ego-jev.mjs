@@ -42,6 +42,7 @@ const MAX_SINGLE = 240;          // choice questions accept at most 255 options
 const MAX_STATE_CHARS = 70_000;  // requests are capped at 32,768 input tokens
 const GROUP = 30;
 const VERIFY_DONE = 0.65, VERIFY_LIKELY = 0.35;
+const REQUIRE_MET = 0.5;
 
 // For questions that send the whole page (check, verify, ...). Pages with many elements exceed the input cap,
 // so elements with state (checked, value, expanded) are kept first and the rest fill up to the cap, in page order.
@@ -179,8 +180,8 @@ export class EgoJev {
     });
   }
 
-  async decide(page, goal, values, history, lastChange) {
-    const task = { goal, ...(Object.keys(values).length ? { values } : {}), history, ...(lastChange ? { last_change: lastChange } : {}) };
+  async decide(page, goal, values, history, lastChange, extra = {}) {
+    const task = { goal, ...extra, ...(Object.keys(values).length ? { values } : {}), history, ...(lastChange ? { last_change: lastChange } : {}) };
     const withValues = Object.keys(values).length ? ", with the given `task.values`" : "";
     const common = {
       done: { type: "noul", instructions: `Does \`page\` show that \`task.goal\` has been achieved${withValues}? Judge from \`page.text\` and \`page.elements\`.` },
@@ -277,6 +278,9 @@ export class EgoJev {
     catch (e) {
       if (!/intercepts pointer events/i.test(String(e))) throw e;
       await this.ep.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: "center", inline: "center" }), s);
+      try { return await this.ep.click(s, { ...opts, timeout: 1500 }); } catch {}
+      // still covered: an open autocomplete list or popover usually closes on Escape
+      await this.ep.keyboard.press("Escape"); await sleep(200);
       try { return await this.ep.click(s, opts); } catch { throw e; }
     }
   }
@@ -363,11 +367,18 @@ export class EgoJev {
     return answers.all.noul;
   }
 
-  async runGoal(goal, { values = {}, maxActions = 10, doneAt = 0.5, minTarget = 0.3, allowIrreversible = false, irreversibleAt = 0.6, log = () => {} } = {}) {
+  // Score each caller-given requirement against the current page state, in one request.
+  async requirements(page, goal, require) {
+    const qs = Object.fromEntries(require.map((text, k) => [`r${k}`, { type: "noul", instructions: `Look only at the current state of \`page\` (selected filters, checked boxes, chosen sort order, entered values, the screen that is shown). Is this requirement visibly in effect on \`page\` right now: "${text}"? If it is not visibly in effect, the answer is no.` }]));
+    const { answers } = await this.call({ page: fitPage(page), task: { goal } }, qs);
+    return require.map((_, k) => answers[`r${k}`].noul);
+  }
+
+  async runGoal(goal, { values = {}, require = [], maxActions = 10, doneAt = 0.5, minTarget = 0.3, allowIrreversible = false, irreversibleAt = 0.6, log = () => {} } = {}) {
     const t0 = Date.now(); const calls0 = this.stats.calls;
     const history = []; const rounds = [];
     let prevPage = null, waits = 0, page = null, status = "max_actions", info, pending, retried = false, rejected = 0;
-    const seen = new Map();
+    const seen = new Map(), reached = new Set();
     this.promptText = values.prompt;
     // Confirm a done candidate with verify(). Returns true to end the loop.
     const finish = async (r, act) => {
@@ -384,7 +395,28 @@ export class EgoJev {
       await this.settle();
       page = await this.snapshot();
       if (this.events.length) history.push(...this.events.splice(0).map(e => ({ event: e })));
-      const a = await this.decide(page, goal, values, history.slice(-12), round ? pageDiff(prevPage, page) : undefined);
+      // With requirements, the round works on the first one never reached yet. A reached one stays reached, because
+      // later steps can undo earlier states (a cart empties once the order is placed). The run ends when all have
+      // been reached and the last is in effect now; done if every one is still in effect, likely_done otherwise.
+      let focus = goal, extra = {}, req;
+      if (require.length) {
+        req = (await this.requirements(page, goal, require)).map(p => +p.toFixed(2));
+        req.forEach((p, k) => { if (p >= REQUIRE_MET) reached.add(k); });
+        log(`  r${round}: require=[${req.join(", ")}]`);
+        const last = require.length - 1;
+        let next = require.findIndex((_, k) => !reached.has(k));
+        if (next < 0 && req[last] >= REQUIRE_MET) {
+          rounds.push({ round, require: req });
+          const gone = require.filter((_, k) => req[k] < REQUIRE_MET);
+          if (gone.length) { status = "likely_done"; info = `every requirement was reached, but these are not in effect now: ${gone.map(t => `"${t}"`).join(", ")}`; }
+          else status = "done";
+          break;
+        }
+        if (next < 0) next = last;
+        focus = require[next];
+        extra = { overall_goal: goal, already_reached: require.filter((_, k) => reached.has(k)) };
+      }
+      const a = await this.decide(page, focus, values, history.slice(-12), round ? pageDiff(prevPage, page) : undefined, extra);
       prevPage = page;
       const act = this.resolve(page, a, values);
       const done = Math.max(a.done.noul, a.done_change?.noul ?? 0);
@@ -393,11 +425,13 @@ export class EgoJev {
         blocked: +a.blocked.noul.toFixed(2), error_shown: +a.error.noul.toFixed(2), login: +a.login.noul.toFixed(2), irreversible: +a.irreversible.noul.toFixed(2),
         tool: act.tool, p_tool: +act.p_tool.toFixed(2), target: act.target, p_target: +act.p_target.toFixed(2), el: brief(act.el),
         value: act.valueKey, elements: page.elements.length, stages: a.stages, candidates: act.candidates,
+        ...(req ? { require: req, focus } : {}),
       };
       rounds.push(r);
       log(`  r${round}: ${act.tool}(${r.p_tool}) -> #${act.target} ${r.el} (${r.p_target})${act.valueKey ? ` value=${act.valueKey}` : ""}  done=${r.done} err=${r.error_shown} login=${r.login} irrev=${r.irreversible}  [${page.elements.length} els${a.stages === 2 ? ", 2-stage" : ""}]`);
 
-      if (round > 0 && done >= doneAt && done < 0.85 && act.tool !== "none") {
+      // With requirements, Jev's own done score is about the focused one only; the requirement scores decide when to stop.
+      if (!req && round > 0 && done >= doneAt && done < 0.85 && act.tool !== "none") {
         // "done" and "next action" disagree: settle it with a stricter single question
         const c = await this.call({ page: fitPage(page), task: { goal, history: history.slice(-12) } }, { complete: { type: "noul", instructions: "Is everything `task.goal` asks for already finished on `page`, so that no further action (such as pressing a submit, search or continue button) is needed?" } });
         r.confirm = +c.answers.complete.noul.toFixed(2);
@@ -408,7 +442,7 @@ export class EgoJev {
           pending = { action: act.tool, element: brief(act.el), p_irreversible: r.irreversible };
           break;
         }
-      } else if (done >= (round > 0 ? doneAt : 0.9) && (done >= 0.85 || act.tool === "none" || round === 0)) {
+      } else if (!req && done >= (round > 0 ? doneAt : 0.9) && (done >= 0.85 || act.tool === "none" || round === 0)) {
         if (await finish(r, act)) break;
       }
       if (round === maxActions) break;
@@ -420,10 +454,10 @@ export class EgoJev {
         // content that appears after a delay (modals, late renders): look once more before giving up
         retried = true; await sleep(1500); round--; rounds.pop(); continue;
       }
-      if (act.tool === "none" && round > 0 && done >= 0.35 && a.error.noul < 0.5 && a.blocked.noul < 0.5) {
+      if (!req && act.tool === "none" && round > 0 && done >= 0.35 && a.error.noul < 0.5 && a.blocked.noul < 0.5) {
         if (await finish(r, act)) break;
       }
-      if (act.tool === "none") { status = a.blocked.noul >= 0.5 ? "blocked" : "stuck"; break; }
+      if (act.tool === "none") { status = a.blocked.noul >= 0.5 ? "blocked" : "stuck"; if (req) info = `Jev found no action for the requirement "${focus}"`; break; }
       if (a.blocked.noul >= 0.85) { status = "blocked"; break; }
       if (act.tool === "wait") {
         if (++waits > 6) { status = "stuck"; info = "page never finished loading"; break; }
@@ -479,6 +513,8 @@ export class EgoJev {
     if (pending) out.pending = pending;
     out.done_score = +(rounds.at(-1)?.done ?? 0);
     if (rounds.at(-1)?.verify != null) out.verify_score = rounds.at(-1).verify;
+    const lastReq = rounds.findLast(r => r.require)?.require;
+    if (lastReq) out.requirements = require.map((text, k) => ({ text, p: lastReq[k] }));
     if (!["done", "likely_done"].includes(status)) {
       out.page_text = page?.text?.slice(0, 600);
       if (["ambiguous", "stuck", "max_actions"].includes(status)) out.candidates = rounds.at(-1)?.candidates;

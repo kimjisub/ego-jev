@@ -14,7 +14,7 @@ if (A.url) await b.open(A.url); else await b.settle();
 
 let out;
 if (A.cmd === "do") {
-  const r = await b.do(A.goal, { values: A.values ?? {}, maxActions: A.max ?? 10, allowIrreversible: !!A.allowIrreversible, log: line => console.log(line) });
+  const r = await b.do(A.goal, { values: A.values ?? {}, require: A.require ?? [], maxActions: A.max ?? 10, allowIrreversible: !!A.allowIrreversible, log: line => console.log(line) });
   const { rounds, ...rest } = r;
   out = rest;
 } else if (A.cmd === "check") {

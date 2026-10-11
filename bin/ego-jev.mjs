@@ -2,7 +2,7 @@
 // ego-jev: let Jev pick the next action inside an ego lite TaskSpace. The caller (you, or an LLM agent) supplies
 // the goal and the values to type; Jev only chooses what to click and where each value goes.
 //
-//   ego-jev do "<goal>" [key=value ...] [--url U] [--space N] [--page p1] [--max 10] [--allow-irreversible] [--finish] [--name NAME]
+//   ego-jev do "<goal>" [key=value ...] [--url U] [--space N] [--page p1] [--max 10] [--require R ...] [--allow-irreversible] [--finish] [--name NAME]
 //   ego-jev check "<yes/no question>" [--space N] [--page p1]
 //   ego-jev read "<question>" [--space N] [--page p1]
 //
@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..");
 
-const USAGE = `usage: ego-jev do|check|read "<text>" [key=value ...] [--url U] [--space N] [--page p1] [--max N] [--allow-irreversible] [--finish] [--name NAME]
+const USAGE = `usage: ego-jev do|check|read "<text>" [key=value ...] [--url U] [--space N] [--page p1] [--max N] [--require R ...] [--allow-irreversible] [--finish] [--name NAME]
 
   do      work toward a goal; key=value pairs are the values Jev may type or select
   check   yes/no question about the current page, answered as a probability
@@ -29,6 +29,8 @@ const USAGE = `usage: ego-jev do|check|read "<text>" [key=value ...] [--url U] [
   --space N             reuse TaskSpace N (default: create one named --name or "ego-jev")
   --page p1             page label inside the TaskSpace (default p1)
   --max N               action budget for do (default 10)
+  --require R           a condition that must be visibly in effect for do to finish; repeat for several.
+                        Each round works on the first one not yet in effect, in the order given
   --allow-irreversible  let do click through steps that look hard to undo (orders, payments, deletes)
   --finish              close the TaskSpace afterwards
 
@@ -49,6 +51,7 @@ for (let k = 0; k < argv.length; k++) {
   else if (a === "--name") A.name = argv[++k];
   else if (a === "--allow-irreversible") A.allowIrreversible = true;
   else if (a === "--finish") A.finish = true;
+  else if (a === "--require") (A.require ??= []).push(argv[++k]);
   else if (a.startsWith("--")) fail(USAGE);
   else if (A.goal == null) A.goal = a;
   else { const i = a.indexOf("="); if (i < 1) fail(USAGE); A.values[a.slice(0, i)] = a.slice(i + 1); }

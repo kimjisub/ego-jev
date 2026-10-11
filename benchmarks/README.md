@@ -46,6 +46,22 @@ agent submitted by hand. That bug was fixed and the 15.8 s figure is the rerun.
   flows, because its thinking time sits between every plain-ego call but not between Jev rounds.
 - Order alternated (T1 and T3 ran mixed first, T2 and T4 ran plain first) to spread warm-cache effects.
 
+## Goal phrasing (ego-jev only)
+
+Same day, same machine. Time is the `ego-jev` command alone, without an agent around it. One run each.
+
+| Run | Phrasing | Result | Actions | Time |
+|---|---|---|---|---|
+| Danawa | outcome only: "3인분까지 짓는 IH 압력밥솥을 가장 싼 것부터 보고 싶다" | searched and sorted; no IH or size filter, rentals on top; `likely_done` (verify 0.47) | 4 | 19.8 s |
+| Danawa | same outcome + 4 `--require` | all four reached, same top 5 as T1; `done` | 6 (one click retried after the list re-rendered) | 19.3 s |
+| SauceDemo | outcome only: "I want to buy the Sauce Labs Backpack and the Sauce Labs Bike Light" | logged in and added both items, then stopped on the product list without checking out; `likely_done` (verify 0.4) | 5 | 8.7 s |
+| SauceDemo | same outcome + 4 `--require`, empty cart | order placed; `likely_done` because the cart and form requirements are gone after the order, as designed | 12 | 21.6 s |
+
+The first Danawa `--require` attempt stopped as `ambiguous`: the search autocomplete list covered the search button
+and three clicks were blocked. Blocked clicks now press Escape and retry once; the 19.3 s run is after that change.
+A second SauceDemo `--require` run started with two items left in the cart by the outcome-only run, skipped adding
+them and placed the order in 15.7 s.
+
 ## Files
 
 - `results.tsv`: raw timestamps (`iso, epoch ms, task, mode, start|end, note`). `T3 mixed` is the run before the fix, `T3 mixed2` the rerun. An extra `T3 mixed end` row comes from a failed submit attempt; the later `final` row is the real end.
