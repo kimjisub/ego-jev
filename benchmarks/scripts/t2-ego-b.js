@@ -1,0 +1,10 @@
+const task = await taskSpace(11);
+const page = task.page("p1");
+await page.click('button[name="add-to-cart-sauce-labs-backpack"]');
+await page.click('button[name="add-to-cart-sauce-labs-bike-light"]');
+await page.click('a[data-test="shopping-cart-link"]');
+await page.waitForURL(/cart/);
+await page.click('#checkout');
+await page.waitForURL(/checkout-step-one/);
+const s = String(await page.snapshot());
+console.log(s.split("\n").filter(l => /textbox|button/i.test(l)).join("\n"));

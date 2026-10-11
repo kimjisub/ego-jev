@@ -1,0 +1,4 @@
+node_modules/
+.env
+*.fifo
+.DS_Store

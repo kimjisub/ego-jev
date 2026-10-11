@@ -1,0 +1,14 @@
+const task = await taskSpace(14);
+const page = task.page("p1");
+await page.fill('css=input[name="custname"]', "Jisub Kim");
+await page.fill('css=input[name="custtel"]', "010-1234-5678");
+await page.fill('css=input[name="custemail"]', "jisub@example.com");
+await page.click('css=input[name="size"][value="medium"]');
+await page.click('css=input[name="topping"][value="bacon"]');
+await page.click('css=input[name="topping"][value="cheese"]');
+await page.fill('css=input[name="delivery"]', "19:30");
+await page.fill('css=textarea[name="comments"]', "Ring the bell twice");
+await page.click('css=form button');
+await page.waitForURL(/\/post/);
+console.log(JSON.stringify(JSON.parse(await page.evaluate(() => document.body.innerText)).form));
+await task.finish({ keep: [] });

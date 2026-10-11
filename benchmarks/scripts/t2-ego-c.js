@@ -1,0 +1,11 @@
+const task = await taskSpace(11);
+const page = task.page("p1");
+await page.fill('input[name="firstName"]', "Jisub");
+await page.fill('input[name="lastName"]', "Kim");
+await page.fill('input[name="postalCode"]', "12345");
+await page.click('input[name="continue"]');
+await page.waitForURL(/checkout-step-two/);
+await page.click('#finish');
+await page.waitForURL(/checkout-complete/);
+console.log(await page.evaluate(() => document.querySelector(".complete-header")?.innerText));
+await task.finish({ keep: [] });
