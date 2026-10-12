@@ -104,8 +104,22 @@ export class EgoJev {
             window.__jevMut = performance.now();
             window.__jevMO = new MutationObserver(recs => { if (recs.some(r => r.attributeName !== "data-jev-i")) window.__jevMut = performance.now(); });
             window.__jevMO.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+            // Single-page apps change the URL at once and re-render only when their fetch returns, often after more
+            // than a second of DOM silence. Count same-origin requests in flight (analytics and ads go to other
+            // origins); ones older than 2.5 s (long polls) do not count.
+            const live = window.__jevNet = new Map(); let n = 0;
+            const own = u => { try { return new URL(String(u), location.href).origin === location.origin; } catch { return false; } };
+            // a finished request counts as a change too, so the render that follows it is waited for
+            const track = p => { const id = ++n; live.set(id, performance.now()); const done = () => { if (live.delete(id)) window.__jevMut = Math.max(window.__jevMut, performance.now()); }; p?.then?.(done, done); return done; };
+            const f = window.fetch;
+            if (f) window.fetch = function (...a) { const p = f.apply(this, a); if (own(a[0]?.url ?? a[0])) track(p); return p; };
+            const open = XMLHttpRequest.prototype.open, send = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function (m, u, ...r) { this.__jevOwn = own(u); return open.call(this, m, u, ...r); };
+            XMLHttpRequest.prototype.send = function (...a) { if (this.__jevOwn) this.addEventListener("loadend", track(), { once: true }); return send.apply(this, a); };
           }
-          return document.readyState === "loading" ? 0 : performance.now() - window.__jevMut;
+          const now = performance.now();
+          if ([...window.__jevNet.values()].some(t => now - t < 2500)) return 0;
+          return document.readyState === "loading" ? 0 : now - window.__jevMut;
         });
       } catch { idle = 0; }
       if (idle >= quiet) break;
@@ -281,11 +295,24 @@ export class EgoJev {
       if (!l) return null;
       l.scrollIntoView({ block: "center", inline: "nearest" });
       l.setAttribute("data-jev-label", "1");
-      return { h: l.getBoundingClientRect().height };
+      const r = l.getBoundingClientRect();
+      // the transparent input of a custom checkbox often sits over the label's left edge
+      return { h: r.height, inputOnEdge: isToggle && document.elementFromPoint(r.x + 4, r.y + r.height / 2) === el };
     }, s);
     const clear = () => this.ep.evaluate(() => document.querySelectorAll("[data-jev-label]").forEach(l => l.removeAttribute("data-jev-label")));
+    if (box?.inputOnEdge) {
+      await clear();
+      return this.ep.click(s, opts);
+    }
     if (box) {
-      try { return await this.ep.click("[data-jev-label]", { ...opts, position: { x: 4, y: Math.max(1, Math.floor(box.h / 2)) } }); }
+      // Custom checkboxes often lay the transparent input over the label's left edge, so the click lands on the very
+      // control we want but ego reports it as covered. Then click the input itself, and last the label's centre.
+      try { return await this.ep.click("[data-jev-label]", { ...opts, timeout: 1500, position: { x: 4, y: Math.max(1, Math.floor(box.h / 2)) } }); }
+      catch (e) {
+        if (!/intercepts pointer events/i.test(String(e))) throw e;
+        try { return await this.ep.click(s, { ...opts, timeout: 1500 }); } catch {}
+        try { return await this.ep.click("[data-jev-label]", { ...opts, timeout: 1500 }); } catch { throw e; }
+      }
       finally { await clear(); }
     }
     try { return await this.ep.click(s, { ...opts, timeout: 1500 }); }
@@ -435,12 +462,14 @@ export class EgoJev {
       // been reached and the last is in effect now; done if every one is still in effect, likely_done otherwise.
       // With mergeRequire, the scores come with the action in one request: the round guesses that the focus is the
       // same as last round's, and asks again with the new focus only if the scores show that guess was already reached.
-      let focus = goal, extra = {}, req, a;
+      let focus = goal, focusP = 1, extra = {}, req, a;
       const hist = history.slice(-12), diff = round ? pageDiff(prevPage, page) : undefined;
       if (require.length) {
         const firstOpen = () => require.findIndex((_, k) => !reached.has(k));
         const extraFor = () => ({ overall_goal: goal, already_reached: require.filter((_, k) => reached.has(k)) });
-        const score = sc => { req = sc.map(p => +p.toFixed(2)); req.forEach((p, k) => { if (p >= REQUIRE_MET) reached.add(k); }); };
+        // Requirements are given in order, so one counts as reached only once every earlier one has been: a high score
+        // for "the free-delivery filter is selected" on the home page, before any search, is not taken as progress.
+        const score = sc => { req = sc.map(p => +p.toFixed(2)); for (let k = 0; k < req.length; k++) { if (req[k] >= REQUIRE_MET && (k === 0 || reached.has(k - 1))) reached.add(k); } };
         const guess = firstOpen();
         // only pages asked in one stage can carry the scores; on two-stage pages the guess would cost a request
         if (mergeRequire && guess >= 0 && page.elements.length <= MAX_SINGLE && fits(page)) {
@@ -459,12 +488,14 @@ export class EgoJev {
           break;
         }
         if (next < 0) next = last;
-        focus = require[next];
+        focus = require[next]; focusP = req[next];
         extra = extraFor();
         if (!a) a = await this.decide(page, focus, values, hist, diff, extra);
       } else a = await this.decide(page, goal, values, hist, diff);
       prevPage = page;
-      if (req && a.tool.choice === "none" && a.tool.probabilities.none < 0.6 && a.target) {
+      // With requirements, "no action" next to a confident target is a contradiction when the tool answer is weak, or
+      // when Jev itself scores the focused requirement as clearly not in effect (under 0.2): act on the target then.
+      if (req && a.tool.choice === "none" && a.target && (a.tool.probabilities.none < 0.6 || focusP < 0.2)) {
         const pt = Math.max(...Object.values(a.target.probabilities));
         const alt = Object.entries(a.tool.probabilities).filter(([t]) => TARGETED.has(t)).sort((x, y) => y[1] - x[1])[0];
         if (pt >= 0.6 && alt) a.tool = { ...a.tool, choice: alt[0], overridden_none: true };
@@ -514,7 +545,9 @@ export class EgoJev {
         if (++waits > 6) { status = "stuck"; info = "page never finished loading"; break; }
         await this.settle({ max: 4000 }); await sleep(600); history.push({ action: "wait" }); continue;
       }
-      if (TARGETED.has(act.tool) && act.p_target < minTarget) { status = "ambiguous"; info = "target confidence too low; refine the goal or act on a candidate directly"; break; }
+      // Enter in the field just typed into needs no confident pick: that is where a value waits to be submitted
+      const enterAfterTyping = act.tool === "press_enter" && act.el && brief(act.el) === history.findLast(h => h.action === "type" && !h.error)?.element;
+      if (TARGETED.has(act.tool) && act.p_target < minTarget && !enterAfterTyping) { status = "ambiguous"; info = "target confidence too low; refine the goal or act on a candidate directly"; break; }
       const seenKey = `${act.tool}|${brief(act.el)}|${["type", "select", "upload"].includes(act.tool) ? act.valueKey : ""}|${page.url}|${page.text}|${JSON.stringify(page.elements)}`;
       seen.set(seenKey, (seen.get(seenKey) ?? 0) + 1);
       if (seen.get(seenKey) >= 3) { status = "stuck"; info = "repeating the same action on the same page without progress"; break; }
