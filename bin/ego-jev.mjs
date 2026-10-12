@@ -126,8 +126,12 @@ async function proxyCommand(args) {
   if (!process.env.TYPESAFE_API_KEY) fail("TYPESAFE_API_KEY is not set; start the proxy under your secret manager, e.g. op run --env-file keys.env -- ego-jev proxy");
   const k = args.indexOf("--idle");
   const idle = (k >= 0 ? Number(args[k + 1]) : 120) * 60_000;
-  const code = `const { serve } = await import(${JSON.stringify(pathToFileURL(join(ROOT, "src/proxy.mjs")).href)}); const key = process.env.TYPESAFE_API_KEY; delete process.env.TYPESAFE_API_KEY; serve({ key, idle: ${idle} });`;
-  spawn(process.execPath, ["--input-type=module", "-e", code], { detached: true, stdio: "ignore", env: { ...process.env } }).unref();
+  const code = `const { serveFromStdin } = await import(${JSON.stringify(pathToFileURL(join(ROOT, "src/proxy.mjs")).href)}); await serveFromStdin({ idle: ${idle} });`;
+  // the key goes over stdin; the child's environment (readable with ps eww) does not carry it
+  const env = { ...process.env }; delete env.TYPESAFE_API_KEY;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { detached: true, stdio: ["pipe", "ignore", "ignore"], env });
+  child.stdin.end(process.env.TYPESAFE_API_KEY);
+  child.unref();
   for (let i = 0; i < 30 && !(await proxyAlive()); i++) await new Promise(r => setTimeout(r, 100));
   if (!(await proxyAlive())) fail("the proxy did not start");
   console.log(`running on ${SOCKET}`); process.exit(0);

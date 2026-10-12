@@ -82,8 +82,9 @@ ego-jev proxy [--idle MINUTES] | ego-jev proxy status | ego-jev proxy stop
   ego-jev proxy stop
   ```
 
-  The proxy keeps the key in its own process and forwards Jev requests that arrive on a unix socket
-  (`~/.cache/ego-jev/jev.sock`, mode 600, in a mode 700 directory). It never sends the key back. Any process of your
+  The proxy receives the key on stdin (not in its environment, which `ps eww` would show), keeps it in memory and
+  forwards Jev requests that arrive on a unix socket (`~/.cache/ego-jev/jev.sock`, mode 600, in a mode 700
+  directory). It never sends the key back. Any process of your
   user can send requests through it while it runs. A secret manager call costs 2 to 4 s, so this matters when an
   agent calls ego-jev many times.
 

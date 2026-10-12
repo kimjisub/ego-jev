@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 (2026-10-12)
+
+- `ego-jev proxy` receives the key on stdin instead of its environment. A process's initial environment stays
+  readable with `ps eww` by the same user for the process's whole life; 0.3.0 put the key there.
+
 ## 0.3.0 (2026-10-12)
 
 - Security: the API key no longer goes into the ego runtime's `process.env`. The runtime keeps one `process.env` for

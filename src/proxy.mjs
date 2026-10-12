@@ -1,7 +1,8 @@
 // A local Jev proxy. It holds the API key in its own process and forwards Jev requests that arrive on a unix socket
 // (mode 600, in a mode 700 directory), so later ego-jev calls need no key and skip the secret manager. The key is
 // never sent back. Any process of the same user can send requests through it while it runs; it exits after
-// `idle` ms without requests.
+// `idle` ms without requests. The key arrives on stdin, not in the environment: a process's initial environment
+// stays readable with `ps eww` for its whole life.
 import { createServer, request } from "node:http";
 import { mkdirSync, rmSync, chmodSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -51,4 +52,13 @@ export function serve({ key, socket = SOCKET, idle = 2 * 3600_000 }) {
   server.listen(socket, () => { chmodSync(socket, 0o600); bump(); });
   for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { rmSync(socket, { force: true }); process.exit(0); });
   return server;
+}
+
+// Reads the key from stdin until EOF, then serves.
+export async function serveFromStdin(opts = {}) {
+  let key = "";
+  for await (const c of process.stdin) key += c;
+  key = key.trim();
+  if (!key) throw new Error("no API key on stdin");
+  return serve({ ...opts, key });
 }
