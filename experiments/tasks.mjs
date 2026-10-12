@@ -22,12 +22,59 @@ export const TASKS = {
       "상품 목록이 낮은가격순으로 정렬되어 있다",
     ],
     check: () => {
-      const checked = t => [...document.querySelectorAll("input[type=checkbox]")].some(i => {
-        const l = i.closest("label") || (i.id && document.querySelector(`label[for="${CSS.escape(i.id)}"]`));
-        return i.checked && l && l.innerText.trim().startsWith(t);
+      // Danawa serves two filter layouts: native checkboxes, and buttons with role=checkbox and data-state
+      const on = i => i.checked === true || i.getAttribute("data-state") === "checked" || i.getAttribute("aria-checked") === "true";
+      const checked = t => [...document.querySelectorAll("input[type=checkbox], [role=checkbox]")].some(i => {
+        const l = i.closest("label") || (i.id && document.querySelector(`label[for="${CSS.escape(i.id)}"]`)) || i;
+        return on(i) && l.innerText.trim().startsWith(t);
       });
-      const ih = checked("IH압력밥솥"), p3 = checked("3인용"), low = /sort=priceASC/.test(location.href);
+      // a third layout keeps the selection only in the URL: attribute=556-2771-OR (IH압력밥솥), 6941-125068-OR (3인용)
+      const attr = decodeURIComponent(new URL(location.href).searchParams.get("attribute") ?? "");
+      const ih = checked("IH압력밥솥") || attr.includes("556-2771-OR"), p3 = checked("3인용") || attr.includes("6941-125068-OR");
+      const low = /sort=priceASC/.test(location.href);
       return { ok: ih && p3 && low, ih, p3, low };
+    },
+  },
+
+  gmarket: {
+    url: "https://www.gmarket.co.kr/",
+    max: 10,
+    values: { query: "무선 마우스" },
+    goals: {
+      procedure: "검색창에 query 를 입력해 검색하고, 필터에서 브랜드 로지텍과 무료배송을 선택하고, 낮은 가격순으로 정렬한다",
+      outcome: "무료배송되는 로지텍 무선 마우스를 가장 싼 것부터 보고 싶다",
+    },
+    require: [
+      "무선 마우스 검색 결과가 표시되어 있다",
+      "브랜드 로지텍 필터가 선택되어 있다",
+      "무료배송 필터가 선택되어 있다",
+      "상품 목록이 낮은 가격순으로 정렬되어 있다",
+    ],
+    check: () => {
+      const u = new URL(location.href), f = u.searchParams.get("f") ?? "";
+      const sel = document.querySelector(".list__selected-filter")?.innerText ?? "";
+      const ok = /무선/.test(u.searchParams.get("keyword") ?? "") && f.includes("d:f") && /로지텍/.test(sel) && u.searchParams.get("s") === "1";
+      return { ok, f, s: u.searchParams.get("s") };
+    },
+  },
+
+  yes24: {
+    url: "https://www.yes24.com/",
+    max: 8,
+    values: { query: "파이썬" },
+    goals: {
+      procedure: "검색창에 query 를 입력해 검색하고, 분야를 국내도서로 좁히고, 신상품순으로 정렬한다",
+      outcome: "파이썬 국내도서를 최신 책부터 보고 싶다",
+    },
+    require: [
+      "파이썬 검색 결과가 표시되어 있다",
+      "검색 결과가 국내도서로 좁혀져 있다",
+      "검색 결과가 신상품순으로 정렬되어 있다",
+    ],
+    check: () => {
+      const u = new URL(location.href);
+      let q = u.searchParams.get("query") ?? ""; try { q = decodeURIComponent(q); } catch {}
+      return { ok: /파이썬/.test(q) && u.searchParams.get("domain") === "BOOK" && u.searchParams.get("order") === "RECENT", q, order: u.searchParams.get("order") };
     },
   },
 

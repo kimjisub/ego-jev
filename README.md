@@ -13,11 +13,16 @@ goal and the values.
 Your LLM agent stays in charge of what to do and why. ego-jev takes the clicking off its hands and keeps page
 snapshots out of its context.
 
+**Measured with Claude Opus 5.5 as the agent** (fresh subagents, paired runs, all 24 correct,
+[details](experiments/agent/README.md)): on a 1,000-element shopping page with filters and sorting the agent finished
+in 25 s with ego-jev against 75 s alone; across six tasks, 20.5 s against 29.0 s on average, with 40 % fewer tool
+calls. On tasks where the agent did not hand anything to ego-jev, both took the same time.
+
 ## Requirements
 
 - macOS with ego lite installed and onboarded (`ego-browser` on your PATH or in `~/.local/bin`)
 - Node.js 20 or later
-- A TypeSafe API key in `TYPESAFE_API_KEY`
+- A TypeSafe API key in `TYPESAFE_API_KEY`, or an `ego-jev proxy` started with it
 
 No other dependencies: no Playwright, no bundled browser.
 
@@ -59,6 +64,7 @@ EGO_JEV_RESULT {"status":"likely_done","url":".../checkout-complete.html","actio
 ego-jev do "<goal>" [key=value ...] [--require "<page state>" ...] [--url U] [--space N] [--page p1] [--max 10] [--allow-irreversible] [--finish] [--name NAME]
 ego-jev check "<yes/no question>" [--space N] [--page p1]
 ego-jev read "<question>" [--space N] [--page p1]
+ego-jev proxy [--idle MINUTES] | ego-jev proxy status | ego-jev proxy stop
 ```
 
 - `do` works toward a goal. `key=value` pairs are the only strings Jev may type or select.
@@ -67,7 +73,32 @@ ego-jev read "<question>" [--space N] [--page p1]
 - `space` in the result is the ego TaskSpace id. Pass it to `--space` to continue in the same tab, or open it from
   your own `ego-browser nodejs` script with `taskSpace(12)` and take over by hand.
 - `--finish` closes the TaskSpace when the command ends. Otherwise close it with `task.finish({ keep: [] })`.
-- With a secret manager, wrap the call: `op run --env-file keys.env -- ego-jev do ...`.
+- With a secret manager, start the proxy once under it and call ego-jev without the key afterwards:
+
+  ```bash
+  op run --env-file keys.env -- ego-jev proxy   # holds the key for 2 hours of inactivity (--idle MINUTES)
+  ego-jev do ...                                # no TYPESAFE_API_KEY needed while the proxy runs
+  ego-jev proxy status
+  ego-jev proxy stop
+  ```
+
+  The proxy keeps the key in its own process and forwards Jev requests that arrive on a unix socket
+  (`~/.cache/ego-jev/jev.sock`, mode 600, in a mode 700 directory). It never sends the key back. Any process of your
+  user can send requests through it while it runs. A secret manager call costs 2 to 4 s, so this matters when an
+  agent calls ego-jev many times.
+
+## Using it from an agent
+
+Give your agent [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) (1.8 KB), ideally inside the skill or instructions it
+already reads for browser work. The rule it teaches came out of six rounds of agent experiments:
+
+> On a site whose markup you do not know, hand filters, sorting and multi-screen flows (cart, checkout, multi-step
+> forms) to ego-jev from your first browser call. Do everything else yourself: sites you know, URLs you have seen
+> work, a single form or click, and reading the result.
+
+Two rules that sounded right and lost time: "use ego-jev whenever you would have to look at the page first" (agents
+handed it demo sites they already knew), and "fall back to ego-jev when your own attempt fails" (agents keep
+debugging instead of handing over).
 
 ## How to phrase a task
 
@@ -114,8 +145,9 @@ Rules that came out of the runs:
 
 Each round:
 
-1. Wait until the DOM has been quiet for 400 ms (pages open at `domcontentloaded`, so slow third-party resources do
-   not block).
+1. Wait until the DOM has been quiet for 400 ms and no same-origin `fetch` or XHR is in flight (pages open at
+   `domcontentloaded`, so slow third-party resources do not block; single-page apps that re-render after their own
+   request are waited for).
 2. List the interactive elements of the top document with their label, state (checked, value, expanded, sorted,
    selected) and whether they only open a popup or help text, and tag them with `data-jev-i`.
 3. Ask Jev one request with several questions: is the goal done, is the page blocked, is an error shown, is this a
@@ -131,44 +163,47 @@ Before returning `done` without requirements, ego-jev asks a stricter question: 
 of the goal in effect, either shown (a selected filter, an entered value) or evidenced (a confirmation, the page after
 submitting)? A goal that orders or submits is not in effect while the form is merely filled.
 
-Clicks on checkboxes and radios land on the left edge of their label, because labels often hold links in the middle.
+Clicks on checkboxes and radios land on the left edge of their label, because labels often hold links in the middle;
+when a custom checkbox lays its transparent input over that edge, the input itself is clicked.
 A blocked click is retried after scrolling the target to the centre and once more after Escape; if it stays blocked,
 Jev is told what covers it (`dialog "..." covers the target; close or dismiss it first`).
 
-The API key reaches the ego runtime through a one-shot FIFO (mode 600). It is not written to disk and is removed
-from the runtime's environment.
+The API key reaches the ego runtime through a one-shot FIFO (mode 600), or stays in the `ego-jev proxy` process. It
+is never written to disk and never put into the runtime's `process.env`, which the ego runtime shares between all
+scripts it runs.
 
 ## When to use it
 
-Against an agent (Claude Code) driving ego itself, wall clock including the agent's own thinking
-([benchmarks](benchmarks/README.md), first version, procedure phrasing):
+Fresh Claude Opus 5.5 subagents, the same task with and without ego-jev, two paired runs each, wall clock including
+the agent's own thinking ([agent experiments](experiments/agent/README.md)):
 
-| Task | Agent drives ego | Agent + ego-jev |
-|---|---|---|
-| Danawa: two filters + sort on a 900-element page, read top 5 | 31.6 s | **22.8 s** |
-| SauceDemo: log in, add 2 items, check out, finish | 19.3 s | **16.7 s** |
-| httpbin form: 7 fields + submit | **10.2 s** | 15.8 s |
-| Wikipedia: search, open article, read one value | **7.7 s** | 15.9 s |
+| Task | Agent alone | Agent + ego-jev | ego-jev used |
+|---|---|---|---|
+| Danawa: search, two filters, sort, top 3 (about 1,000 elements, hidden checkbox inputs) | 75.2 s | **25.2 s** | yes |
+| G마켓: search, brand and delivery filters, sort, top 3 (single-page app) | 38.9 s | **31.0 s** | yes |
+| YES24: search, category, sort, three titles | 22.3 s | 23.8 s | yes |
+| httpbin form: 7 fields, submit | 13.1 s | 12.5 s | no |
+| Wikipedia: one value from an article | 10.0 s | 10.8 s | no |
+| 국가법령정보센터: one definition from a statute in an iframe | 14.6 s | 19.9 s | no (agent variance) |
 
-The httpbin form now takes 7.9 s on its own with batch filling (it was 10.7 s without).
-
-- **Use ego-jev** for flows of five or more steps, pages with hundreds of elements or awkward markup, and when you
-  want to keep page snapshots out of your agent's context.
-- **Drive ego directly** for one or two actions on a page with clean selectors. Every ego-jev call pays 2 to 3 s of
-  start-up plus 0.7 to 1.5 s per Jev request.
-- **Mix them.** Let ego-jev do the clicking, then read and extract with your own `ego-browser nodejs` script in the
-  same TaskSpace.
+- **Use ego-jev** for filters, sorting and multi-screen flows on sites your agent does not know, pages with hundreds of
+  elements or awkward markup, and when you want to keep page snapshots out of your agent's context.
+- **Drive ego directly** for sites the model already knows (popular demo apps are in its training data), a URL you
+  can build, and one or two actions. An ego-jev call costs about 0.5 s to start plus 1 to 3 s per action.
+- **Read results with your own script** in the same TaskSpace after ego-jev; `ego-jev read` ranks blocks by relevance
+  and can surface recommendation boxes above the list you sorted.
 
 ## Limits
 
 - Only the top document is read; elements inside iframes are not listed.
-- Settling watches DOM mutations only, not network requests.
+- Settling watches DOM mutations and same-origin `fetch`/XHR requests, not WebSockets or cross-origin data calls.
 - New tabs are not followed automatically.
 - Controls whose selected state is not in the DOM (no `checked`, `aria-pressed`, `aria-selected` or a
   `selected`/`active` class) cannot be scored as requirements reliably.
 - The irreversible-step guard is a probability with a 0.6 threshold. On sites with real payments, deletes or
   messages, keep `--max` small and split the goal into steps you can check.
-- A requirement counts as reached at a score of 0.5 and stays reached. If a later action undoes an earlier filter,
+- A requirement counts as reached at a score of 0.5, once every earlier requirement has been reached, and stays
+  reached. If a later action undoes an earlier filter,
   the run ends as `likely_done` and lists it; it does not go back to fix it.
 
 ## Credits

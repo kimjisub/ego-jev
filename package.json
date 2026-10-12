@@ -1,6 +1,6 @@
 {
   "name": "ego-jev",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Let Jev (TypeSafe System One) drive multi-step flows inside ego lite, your real browser. The agent supplies goals, values and target page states; Jev picks every click.",
   "keywords": ["ego-lite", "jev", "typesafe", "browser-automation", "agent", "claude-code"],
   "license": "MIT",
@@ -11,7 +11,7 @@
   "type": "module",
   "bin": { "ego-jev": "bin/ego-jev.mjs" },
   "exports": { ".": "./src/ego-jev.mjs" },
-  "files": ["bin", "src", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": ["bin", "src", "docs", "README.md", "CHANGELOG.md", "LICENSE"],
   "engines": { "node": ">=20" },
   "os": ["darwin"]
 }
