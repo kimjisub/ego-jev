@@ -3,7 +3,7 @@
 //
 //   node experiments/run.mjs --tag NAME [--tasks a,b] [--modes procedure,outcome,require] [--repeat N] [-- extra ego-jev args]
 //
-// Needs TYPESAFE_API_KEY in the environment (for example under `op run`). Each run gets its own TaskSpace, which
+// Needs TYPESAFE_API_KEY in the environment (for example under `op run`) or a running `ego-jev proxy`. Each run gets its own TaskSpace, which
 // is checked with the task's `check` function and then closed. Results are appended to experiments/results/NAME.jsonl.
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, existsSync } from "node:fs";
@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TASKS } from "./tasks.mjs";
+import { proxyAlive } from "../src/proxy.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, "..", "bin", "ego-jev.mjs");
@@ -28,7 +29,7 @@ for (let k = 0; k < argv.length; k++) {
   else throw new Error(`unknown argument ${a}`);
 }
 if (!opt.tag) throw new Error("--tag is required");
-if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set");
+if (!process.env.TYPESAFE_API_KEY && !(await proxyAlive())) throw new Error("TYPESAFE_API_KEY is not set and no ego-jev proxy is running");
 const OUT = join(HERE, "results", `${opt.tag}.jsonl`);
 mkdirSync(dirname(OUT), { recursive: true });
 

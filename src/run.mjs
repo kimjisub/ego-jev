@@ -1,11 +1,14 @@
 // Runs inside `ego-browser nodejs`. The short script written by the ego-jev CLI passes the arguments (EGO_JEV_ARGS)
-// and ego's global functions (EGO_JEV_EGO), then imports this file. The API key is read once from a FIFO.
+// and ego's global functions (EGO_JEV_EGO), then imports this file. The API key is read once from a FIFO
+// and handed to the Jev client directly: process.env is shared by every script in the runtime process.
 import { readFileSync } from "node:fs";
 import { EgoJev } from "./ego-jev.mjs";
+import { setApiKey, setProxy } from "./jev/jev.mjs";
 
 const A = globalThis.EGO_JEV_ARGS;
 const { taskSpace } = globalThis.EGO_JEV_EGO;
-process.env.TYPESAFE_API_KEY = readFileSync(A.keyFifo, "utf8").trim();
+if (A.proxy) setProxy(A.proxy);
+else setApiKey(readFileSync(A.keyFifo, "utf8").trim());
 
 const task = A.space != null ? await taskSpace(Number(A.space)) : await taskSpace(A.name ?? "ego-jev");
 const page = task.page(A.page ?? "p1");
